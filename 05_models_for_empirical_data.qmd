@@ -940,7 +940,7 @@ m1.2 %>%
 
 ## Rhat
 
-```{r, warning=FALSE}
+```{r, warning=FALSE, message=FALSE}
 #| fig-width: 7
 #| fig-height: 3.5
 #| code-fold: true
@@ -972,7 +972,7 @@ m1.2 %>%
 
 Traceplots:
 
-```{r, message=FALSE}
+```{r, warning=FALSE, message=FALSE}
 #| fig-width: 7
 #| fig-height: 7
 #| code-fold: true
