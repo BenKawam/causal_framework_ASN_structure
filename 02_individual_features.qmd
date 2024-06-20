@@ -1,0 +1,707 @@
+---
+title: "Individual-level features"
+author: Ben Kawam et al.
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(cmdstanr)
+  library(patchwork)
+
+# Functions
+  r.srm <- readRDS("./functions/r.srm.rds")
+  fp.i <- readRDS("./functions/fp.i.rds")
+  fp.i.2 <- readRDS("./functions/fp.i.2.rds")
+  sn <- readRDS("./functions/sn.rds")
+  hist.plot <- readRDS("./functions/hist.plot.rds")
+
+# dplyr options
+  options(dplyr.summarise.inform = FALSE)
+```
+
+
+# Continuous variable
+## SCM
+
+### Mathematical description
+
+$$
+\begin{align}
+f_{X} : \hspace{0.5cm} &
+X_{[a]} \sim \mathrm{Normal}(0, 1)\\
+\\
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim \mathrm{Normal}(-0.7^{*} \cdot X_{[a]}, 0.5)\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim \mathrm{Normal}(-0.7^{\ddagger} \cdot X_{[a]}, 0.5)\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(0, 0.5)\\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(0.2 + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+\end{align}
+$$
+
+for $a, b \in \{1, ..., N_{\mathrm{ind}}\}$.
+
+
+### Code
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show function:"
+scm.1 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural paramaters
+  delta = 0.2, # Baseline interaction rate (intercept)
+  beta_gamma = -0.7, # Effect of x on gamma
+  beta_rho = -0.7, # Effect of x on rho
+  sigma_gamma = 0.5, # SD of gamma
+  sigma_rho = 0.5, # SD of rho
+  sigma_tau = 0.5, # SD of tau
+  
+  # Outputs
+  n_l = 15 # Nb of iterations
+){
+  # sim: code version of the SCM
+  sim <- function() {
+    ## 1. Generate data
+    # Individual features
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      x = rnorm(N_ind, 0, 1),
+      mu_gamma = beta_gamma * x,
+      gamma = rnorm(N_ind, mu_gamma, sigma_gamma),
+      mu_rho = beta_rho * x,
+      rho = rnorm(N_ind, mu_rho, sigma_rho)
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+      mu_tau_ab = 0,
+      mu_tau_ba = 0,
+      tau_ab = rnorm(N_dyad, mu_tau_ab, sigma_tau),
+      tau_ba = rnorm(N_dyad, mu_tau_ba, sigma_tau)
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A attribute
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho, x_a = x,
+             mu_gamma_a = mu_gamma, mu_rho_a = mu_rho) %>%
+      
+      # Add B attribute
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho, x_b = x,
+             mu_gamma_b = mu_gamma, mu_rho_b = mu_rho) %>%
+      
+      # Rate
+      mutate(m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab),
+             y_ba = rpois(n(), m_ba))
+
+    ## 2. List format
+    d <- list(
+      # Observables
+      y_ab = df$y_ab,
+      y_ba = df$y_ba,
+      ind_a = df$ind_a,
+      ind_b = df$ind_b,
+      dyad = df$dyad,
+      x_a = df$x_a,
+      x_b = df$x_b,
+      
+      # Indices
+      N_ind = N_ind,
+      N_dyad = N_dyad,
+      N = nrow(df)
+    )
+    
+    
+    ## 3. Output
+    # Output is simulated observations
+      data <- list(df = df,
+                   d = d,
+                   id = ID_features)
+    
+    return(data)
+  }
+  
+  ## 4. Loops over SCM iterations
+  data <- list()
+    # Run the function over loops
+    for (i in 1:n_l) {
+      data[[i]] <- sim()
+    }
+
+  return(data) # output of SCM
+}
+```
+
+### Running SCM
+
+We run the SCM 15 times.
+
+```{r}
+set.seed(2666)
+d.1 <- scm.1()
+```
+
+And compute target values:
+
+```{r}
+(t.1 <- tibble(
+  D = 0.2,
+  s_G = 0.5,
+  s_R = 0.5,
+  s_T = 0.5,
+  c_GR = 0,
+  c_TT = 0
+) %>%
+  gather(param, value) %>%
+  slice(rep(1:n(), each = 2)) %>%
+  mutate(model = c(1, 2) %>% rep(length.out = n())) %>%
+  add_row(param = "b_G", value = -0.7, model = 1) %>%
+  add_row(param = "b_R", value = -0.7, model = 1) %>%
+  mutate(sim_n = 1))
+```
+
+## SRM (statistical model 2)
+
+### Mathematical description
+
+The non-adjusted SRM has been described in Notebook 1. Hereafter, we only describe adjusted estimators.
+
+$$
+\begin{gather}
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+y_{[b, a]} \sim \mathrm{Poisson}(m_{[b, a]})\\
+\\
+m_{[a, b]} = \mathrm{exp}(D + \hat{G}_{[a]} + \hat{R}_{[b]} + T_{[a, b]})\\
+m_{[b, a]} = \mathrm{exp}(D + \hat{G}_{[b]} + \hat{R}_{[a]} + T_{[b, a]})\\
+\\
+\hat{G}_{[a]} = G_{[a]} + b_G^{*} \cdot X_{[a]}\\
+\hat{G}_{[b]} = G_{[b]} + b_G^{*} \cdot X_{[b]}\\
+\\
+\hat{R}_{[a]} = R_{[a]} + b_R^{\ddagger} \cdot X_{[a]}\\
+\hat{R}_{[b]} = R_{[b]} + b_R^{\ddagger} \cdot X_{[b]}\\
+\\
+\begin{pmatrix}
+G_{[a]}\\
+R_{[a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{G}^{2} & c_{GR}s_{G}s_{R}\\
+c_{GR}s_{G}s_{R} & s_{R}^{2}\\
+\end{pmatrix}
+\right]\\
+\begin{pmatrix}
+T_{[a, b]}\\
+T_{[b, a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{T}^{2} & c_{TT}s_{T}^{2}\\
+c_{TT}s_{T}^{2} & s_{T}^{2}\\
+\end{pmatrix}
+\right]\\
+\\
+D, b_G^{*}, b_R^{\ddagger} \sim \mathrm{Normal}(0, 1)\\
+s_{G}, s_{R}, s_{T} \sim \mathrm{Exponential}(1)\\
+c_{GR}, c_{TT} \sim \mathrm{LKJ}(2)
+\end{gather}
+$$
+
+
+### Stan code
+
+We print the adjusted SRM.
+
+```{r}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+# Non adjusted SRM
+srm_1.1 <- cmdstan_model("./stan_models/01/basic.stan")
+
+# Adjusted SRM
+(srm_1.2 <- cmdstan_model("./stan_models/02/b_G_b_R.stan"))
+```
+
+### Running SRMs
+
+```{r, eval = FALSE}
+# Samples for pop-level param., non-adjusted estimator
+s_fe_na.1 <- r.srm(data = d.1,
+                   stats_m = srm_1.1)
+s_fe_na.1 %>%
+  saveRDS("./fitted_models/02/fe_poisson_cont_non_adj.rds")
+
+# Samples for pop-level param., adjusted estimator
+s_fe_a.1 <- r.srm(data = d.1,
+                  stats_m = srm_1.2)
+s_fe_a.1 %>%
+  saveRDS("./fitted_models/02/fe_poisson_cont_adj.rds")
+
+# Individual-level varying effects
+s_vi_na <- r.srm(
+  param = "v_ind",
+  data = d.1,
+  stats_m = srm_1.1,
+  n_var = 10
+)
+s_vi_na %>%
+  saveRDS("./fitted_models/02/ve_ind.rds")
+```
+
+Plot:
+```{r, warning = FALSE, message = FALSE}
+#| fig-width: 7
+#| fig-height: 7
+s_fe_na.1 <- readRDS("./fitted_models/02/fe_poisson_cont_non_adj.rds")
+s_fe_a.1 <- readRDS("./fitted_models/02/fe_poisson_cont_adj.rds")
+
+fp.i.2(t.1, 
+       list(s_fe_a.1, s_fe_na.1),
+    heights = c(3.5, 3.5, 2.7),
+    sd_xlim = c(-0.2, 2.1))
+```
+
+## Supplementary plots
+
+### Display network of interactions
+
+(not displayed in the HTML document)
+
+```{r, eval = FALSE}
+max_lim <- sn(data = d.1[[1]], output = "edges") %>% pull(grooming) %>% max(na.rm = T)
+sn(data = d.1[[1]], col = "continuous", limits = c(1, 74))
+```
+
+Histogram:
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d.1[[1]]$df$y_ab, d.1[[1]]$df$y_ba) %>%
+  hist.plot()
+```
+
+
+### Posterior ellipses
+
+```{r, warning=FALSE}
+#| fig-width: 7
+#| fig-height: 7
+#| code-fold: true
+#| code-summary: "Show code"
+s_vi_na <- readRDS("./fitted_models/02/ve_ind.rds")
+
+ind_var_post <- s_vi_na %>%
+  mutate(ind = parse_number(param, locale = locale(grouping_mark = ".")),
+         param = str_extract(param, "[A-Z]")) %>%
+  select(-sim_n)
+
+ind_var_post <- ind_var_post %>%
+  filter(param == "G") %>%
+  rename(G = value) %>%
+  select(-param) %>% bind_cols(ind_var_post %>%
+                                 filter(param == "R") %>%
+                                 rename(R = value) %>%
+                                 select(-c(param, ind)))
+
+ggplot(ind_var_post, aes(x = G, y = R, group = ind)) +
+  # Ellipses
+  stat_ellipse(
+    geom = "polygon",
+    fill = "#bdb79d",
+    col = "#40403b",
+    linewidth = 0.2,
+    level = 0.50,
+    alpha = 0.1,
+    type = "norm"
+  ) +
+  stat_ellipse(
+    geom = "polygon",
+    fill = "#bdb79d",
+    col = "#40403b",
+    linewidth = 0.2,
+    level = 0.25,
+    alpha = 0.2,
+    type = "norm"
+  )  +
+  stat_ellipse(
+    geom = "polygon",
+    fill = "#bdb79d",
+    col = "#40403b",
+    linewidth = 0.2,
+    level = 0.10,
+    alpha = 0.4,
+    type = "norm"
+  )  +
+  geom_text(data = ind_var_post %>%
+              group_by(ind) %>%
+              summarise(G = mean(G),
+                        R = mean(R)),
+            size = 3,
+            aes(label = ind)) +
+  # Layout
+  theme_bw() +
+    theme(
+    axis.text.y = element_text(size = 6.5),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major = element_line(color = "#ccccc0",
+                                      size = 0.4,
+                                      linetype = "dotted"),
+    strip.background = element_rect(fill = "white", color = "white")
+  ) +
+  xlim(c(-2.5, 2.5)) +
+  ylim(c(-2.5, 2.5))
+```
+
+
+# Categorical variable
+
+## SCM
+
+### Mathematical description
+
+$$
+\begin{align}
+f_{X} : \hspace{0.5cm} &
+X_{[a]} \in_{R} \{1, 2\}\\
+\\
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim
+\begin{cases}
+\mathrm{Normal}(-0.5, 0.5) &\hbox{when } X_{[a]} = 1\\
+\mathrm{Normal}(+0.5, 0.5) &\hbox{when } X_{[a]} = 2\\
+\end{cases}\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim
+\begin{cases}
+\mathrm{Normal}(-0.5, 0.5) &\hbox{when } X_{[a]} = 1\\
+\mathrm{Normal}(+0.5, 0.5) &\hbox{when } X_{[a]} = 2\\
+\end{cases}\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(0, 0.5)\\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(0.2 + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+\end{align}
+$$
+
+for $a, b \in \{1, ..., N_{\mathrm{ind}}\}$.
+
+
+### Code
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show function:"
+scm.2 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural paramaters
+  delta = 0.2, # Baseline interaction rate (intercept)
+  sigma_gamma = 0.5, # SD of gamma
+  sigma_rho = 0.5, # SD of rho
+  sigma_tau = 0.5, # SD of tau
+  
+  # Outputs
+  n_l = 15 # Nb of iterations
+){
+  # sim: code version of the SCM
+  sim <- function() {
+    ## 1. Generate data
+    # Individual features
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      x = c(1, 2) %>% rep(each = N_ind / 2),
+      mu_gamma = ifelse(x == 1, -0.5, 0.5),
+      gamma = rnorm(N_ind, mu_gamma, sigma_gamma),
+      mu_rho = ifelse(x == 1, -0.5, 0.5),
+      rho = rnorm(N_ind, mu_rho, sigma_rho)
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+      mu_tau_ab = 0,
+      mu_tau_ba = 0,
+      tau_ab = rnorm(N_dyad, mu_tau_ab, sigma_tau),
+      tau_ba = rnorm(N_dyad, mu_tau_ba, sigma_tau)
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A attribute
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho, x_a = x,
+             mu_gamma_a = mu_gamma, mu_rho_a = mu_rho) %>%
+      
+      # Add B attribute
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho, x_b = x,
+             mu_gamma_b = mu_gamma, mu_rho_b = mu_rho) %>%
+      
+      # Rate
+      mutate(m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab),
+             y_ba = rpois(n(), m_ba))
+
+    
+    ## 2. List format
+    d <- list(
+      # Observables
+      y_ab = df$y_ab,
+      y_ba = df$y_ba,
+      ind_a = df$ind_a,
+      ind_b = df$ind_b,
+      dyad = df$dyad,
+      x_a = df$x_a,
+      x_b = df$x_b,
+      
+      # Indices
+      N_ind = N_ind,
+      N_dyad = N_dyad,
+      N = nrow(df)
+    )
+    
+    
+    ## 4. Output
+      data <- list(df = df,
+                   d = d,
+                   id = ID_features)
+    
+    return(data)
+  }
+  
+  ## 5. Loops over SCM iterations
+  data <- list()
+    # Run the function over loops
+    for (i in 1:n_l) {
+      data[[i]] <- sim()
+    }
+   
+  return(data) # output of SCM
+}
+```
+
+We run the SCM 15 times.
+
+```{r}
+set.seed(1666)
+d.2 <- scm.2()
+```
+
+And compute target values:
+
+```{r}
+t.2 <- tibble(
+  D = 0.2,
+  s_G = 0.5,
+  s_R = 0.5,
+  s_T = 0.5,
+  c_GR = 0,
+  c_TT = 0
+) %>%
+  gather(param, value) %>%
+  slice(rep(1:n(), each = 2)) %>%
+  mutate(model = c(1, 2) %>% rep(length.out = n())) %>%
+  add_row(param = "L[1]", value = -0.5, model = 1) %>%
+  add_row(param = "L[2]", value = 0.5, model = 1) %>%
+  add_row(param = "M[1]", value = -0.5, model = 1) %>%
+  add_row(param = "M[2]", value = 0.5, model = 1) %>%
+  add_row(param = "M_cont", value = 1, model = 1) %>%
+  add_row(param = "L_cont", value = 1, model = 1) %>%
+  mutate(sim_n = 1)
+```
+
+
+## SRM (statistical model 2')
+
+### Mathematical description
+
+
+$$
+\begin{gather}
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+y_{[b, a]} \sim \mathrm{Poisson}(m_{[b, a]})\\
+\\
+\mathrm{log}(m_{[a, b]}) = D + \hat{G}_{[a]} + \hat{R}_{[b]} + T_{[a, b]}\\
+\mathrm{log}(m_{[b, a]}) = D + \hat{G}_{[b]} + \hat{R}_{[a]} + T_{[b, a]}\\
+\\
+\hat{G}_{[a]} = L_{[X_{[a]}]} + G_{[a]}\\
+\hat{G}_{[b]} = L_{[X_{[b]}]} + G_{[b]}\\
+\\
+\hat{R}_{[a]} = M_{[X_{[a]}]} + R_{[a]}\\
+\hat{R}_{[b]} = M_{[X_{[b]}]} + R_{[b]}\\
+\\
+\begin{pmatrix}
+G_{[a]}\\
+R_{[a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{G}^{2} & c_{GR}s_{G}s_{R}\\
+c_{GR}s_{G}s_{R} & s_{R}^{2}\\
+\end{pmatrix}
+\right]\\
+\begin{pmatrix}
+T_{[a, b]}\\
+T_{[b, a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{T}^{2} & c_{TT}s_{T}^{2}\\
+c_{TT}s_{T}^{2} & s_{T}^{2}\\
+\end{pmatrix}
+\right]\\
+\\
+D, L_{[1]}, L_{[2]}, M_{[1]}, M_{[2]} \sim \mathrm{Normal}(0, 1)\\
+s_{G}, s_{R}, s_{T} \sim \mathrm{Exponential}(1)\\
+c_{GR}, c_{TT} \sim \mathrm{LKJ}(2)
+\end{gather}
+$$
+
+### Stan code
+
+We print the adjusted SRM:
+
+```{r}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+(srm_2 <- cmdstan_model("./stan_models/02/cat.stan"))
+```
+
+
+### Running SRMs
+
+```{r, eval = FALSE}
+# Samples for pop-level param., non-adjusted estimator
+s_fe_na.2 <- r.srm(data = d.2,
+                 stats_m = srm_1.1)
+s_fe_na.2 %>%
+  saveRDS("./fitted_models/02/fe_poisson_cat_non_adj.rds")
+
+# Samples for pop-level param., adjusted estimator
+s_fe_a.2 <- r.srm(data = d.2,
+                 stats_m = srm_2,
+                 param_2 = c("D", "s_G", "s_R", "s_T", "c_GR", "c_TT",
+                             "L[1]", "L[2]", "M[1]", "M[2]"))
+s_fe_a.2 %>%
+  saveRDS("./fitted_models/02/fe_poisson_cat_adj.rds")
+```
+
+Import posterior samples, and compute contrast (on the link scale):
+
+```{r, warning = FALSE, message = FALSE}
+#| fig-width: 7
+#| fig-height: 7
+s_fe_na.2 <- readRDS("./fitted_models/02/fe_poisson_cat_non_adj.rds")
+s_fe_a.2 <- readRDS("./fitted_models/02/fe_poisson_cat_adj.rds")
+
+s_fe_a.2_mod <- s_fe_a.2 %>%
+  filter(param == "M[1]") %>%
+  mutate(L_cont = 
+           (s_fe_a.2 %>% filter(param == "L[2]") %>% pull(value)) -
+           (s_fe_a.2 %>% filter(param == "L[1]") %>% pull(value)),
+         M_cont = 
+           (s_fe_a.2 %>% filter(param == "M[2]") %>% pull(value)) -
+           (s_fe_a.2 %>% filter(param == "M[1]") %>% pull(value))
+  ) %>% select(-param) %>%
+  gather(param, value, 3:4) %>%
+  bind_rows(s_fe_a.2)
+
+  fp.i.2(
+    t.2,
+    list(s_fe_a = s_fe_a.2_mod, s_fe_na.2),
+    heights = c(7, 3.5, 2.7),
+    oth_xlim = c(-4, 4)) 
+```
+
+
+## Supplementary plots
+
+### Social network
+
+(not displayed in the HTML document)
+
+```{r, eval = FALSE}
+max_lim <- sn(data = d.2[[1]], output = "edges") %>% pull(grooming) %>% max(na.rm = T)
+sn(data = d.2[[1]], col = "discrete", limits = c(1, max_lim))
+```
+
+Histogram:
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d.2[[1]]$df$y_ab, d.2[[1]]$df$y_ba) %>%
+  hist.plot()
+```
+
+

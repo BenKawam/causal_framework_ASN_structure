@@ -1,0 +1,642 @@
+---
+title: "Confounders: relatedness and rank"
+author: Ben Kawam et al.
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(patchwork)
+
+# Functions
+  r.srm <- readRDS("./functions/r.srm.rds")
+  fp.i <- readRDS("./functions/fp.i.rds")
+  fp.i.2 <- readRDS("./functions/fp.i.2.rds")
+  sn <- readRDS("./functions/sn.rds")
+  hist.plot <- readRDS("./functions/hist.plot.rds")
+
+# dplyr options
+  options(dplyr.summarise.inform = FALSE)
+```
+
+
+# SCM 
+
+## Code
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show function:"
+ scm.1 <- function(
+    # Structural parameters
+    sigma_gamma = 0.5, # SD of gamma
+    sigma_rho = 0.5, # SD of rho
+    sigma_tau = 0.5, # SD of tau
+    beta_rel = 0.6, # Effect of rel
+    beta_rank = 0.8, # Effect of rank
+    beta_GS = c(0, 0, 0), # Effect of group size
+    
+    # Outputs
+    n_l = 15 # Nb of iterations
+  ){
+  
+   
+  ## A. sim_g: This function runs the SCM for one group at a time
+  sim_g <- function(j,
+                    grp_features) {
+    
+    # Number of kin groups in the group j is about a third of GS
+    (KGN <- grp_features$GS[j] %>%
+      `/`(3) %>%
+      round())
+    
+    # Individual features
+    ID_features <- tibble(
+      grp = grp_features$grp[j],
+      ID = c(grp_features$first_ind[j]:grp_features$last_ind[j]),
+      s = runif(grp_features$GS[j], 1, 2.5),
+      GS = grp_features$GS[j],
+      KG = sample(c(1:KGN), grp_features$GS[j], replace = TRUE),
+      delta = -1.2 + case_when(
+                     GS == 10 ~ beta_GS[1],
+                     GS == 15 ~ beta_GS[2],
+                     GS == 20 ~ beta_GS[3]
+      ),
+      mu_gamma = 0,
+      gamma = rnorm(grp_features$GS[j], mu_gamma, sigma_gamma),
+      mu_rho = 0,
+      rho = rnorm(grp_features$GS[j], mu_rho, sigma_rho)
+    ) %>%
+      arrange(KG) %>%
+      mutate(Ra = c(1:grp_features$GS[j]) %>% standardize(),
+             Ra = -1 * Ra) %>%
+      arrange(KG)
+    
+    # Generate dyads the individuals are part of
+    dyad_features <- tibble(
+      ind_a = t(combn(grp_features$first_ind[j]:grp_features$last_ind[j], 2))[, 1],
+      ind_b = t(combn(grp_features$first_ind[j]:grp_features$last_ind[j], 2))[, 2])
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A attribute
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, mu_gamma_a = mu_gamma, 
+             rho_a = rho, mu_rho_a = mu_rho, KG_a = KG,
+             Ra_a = Ra, s_a = s) %>%
+      
+      # Add B attribute
+      left_join(ID_features %>% select(- c(delta, GS, grp)), 
+                by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, mu_gamma_b = mu_gamma, 
+             rho_b = rho, mu_rho_b = mu_rho, KG_b = KG,
+             Ra_b = Ra, s_b = s) %>%
+      
+      # Compute dyad-level variables
+      mutate(
+        s_ab = s_a + s_b,
+        Re = ifelse(KG_a == KG_b, 1, 0),
+        mu_tau_ab = log(s_ab) + case_when(
+                              (Ra_a < Ra_b) ~ beta_rel * Re + beta_rank * (Ra_b - Ra_a),
+                              (Ra_a >= Ra_b) ~ beta_rel * Re),
+        mu_tau_ba = log(s_ab) + case_when(
+                              (Ra_b < Ra_a) ~ beta_rel * Re +  beta_rank * (Ra_a - Ra_b),
+                              (Ra_b >= Ra_a) ~ beta_rel * Re),
+        tau_ab = rnorm(n(), mu_tau_ab, sigma_tau),
+        tau_ba = rnorm(n(), mu_tau_ba, sigma_tau),
+        m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+        m_ba = exp(delta + gamma_b + rho_a + tau_ba),
+      
+      # Generate observations
+        y_ab = rpois(n(), m_ab),
+        y_ba = rpois(n(), m_ba))
+    
+    # Return the generated data (df) and the ind. features
+    return(list(df, ID_features))
+  }
+    
+    ## B. This function (i) define group features,
+    # (ii) runs sim_g for each group and generate output data,
+    # then (iii) compute the target values for G, R, T, D across
+    # all groups
+    sim <- function(){
+    
+    ## B.1 Define group features
+    grp_features <- tibble(
+      grp = c(1:3),
+      GS = c(10, 15, 20),
+      first_ind = lag(GS, default = 0) %>% cumsum() + 1,
+      last_ind = first_ind + GS - 1
+    )
+      
+    # Empty lists (one element for each group)
+    d <- list()
+    df <- list()
+    ID_features <- list()
+    for (j in c(1:3)){
+     d[[j]] <- sim_g(j, grp_features)
+     df[[j]] <- d[[j]][[1]] # Generated data
+     ID_features[[j]] <- d[[j]][[2]] # Ind. features
+    }
+    
+    ## B.2 Output data
+    # We reformat these objects to tibbles
+    df <- df %>%
+      bind_rows() %>%
+      mutate(dyad = 1:nrow(.))
+    ID_features <- ID_features %>%
+      bind_rows()
+  
+    # List format for simulated data
+    d <- list(
+      # Observables
+      y_ab = df$y_ab,
+      y_ba = df$y_ba,
+      ind_a = df$ind_a,
+      ind_b = df$ind_b,
+      dyad = df$dyad,
+      KG_a = df$KG_a,
+      KG_b = df$KG_b,
+      Re_ab = df$Re,
+      s_ab = df$s_ab,
+      Ra_a = df$Ra_a,
+      Ra_b = df$Ra_b,
+      grp = df$grp,
+      
+      # Indices
+      N_ind = grp_features$GS %>% sum(),
+      N_dyad = df %>% nrow(),
+      N = df %>% nrow()
+    )
+  
+    
+    ## C. Output of sim function
+    list(df = df,
+         d = d,
+         id = ID_features) %>%
+      return()
+    }
+  
+    ## D. How many iterations do we run the SCM for?
+    data <- list()
+    for (i in 1:n_l) {
+      data[[i]] <- sim()
+    }
+    
+    return(data) # output of SCM
+  }
+```
+
+# No effect of group size on delta
+
+## Running SCM
+
+```{r}
+set.seed(2666)
+d.1 <- scm.1()
+```
+
+```{r}
+t_1 <- tibble(
+  D = -1.2,
+  s_G = 0.5,
+  s_R = 0.5,
+  s_T = 0.5,
+  c_GR = 0,
+  c_TT = 0,
+  b_Re = 0.6
+) %>%
+  gather(param, value) %>%
+  slice(rep(1:n(), each = 2)) %>%
+  mutate(model = c(1, 2) %>% rep(length.out = n())) %>%
+  add_row(param = "b_Ra[1]", value = 0.8, model = 1) %>%
+  add_row(param = "b_Ra[2]", value = 0, model = 1) %>%
+  mutate(sim_n = 1)
+```
+
+## SRM (statistical model 4)
+
+## Description
+
+$$
+\begin{gather}
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+y_{[b, a]} \sim \mathrm{Poisson}(m_{[b, a]})\\
+\\
+m_{[a, b]} = \mathrm{exp}(D + G_{[a]} + R_{[b]} + \hat{T}_{[a, b]})\\
+m_{[b, a]} = \mathrm{exp}(D + G_{[b]} + R_{[a]} + \hat{T}_{[b, a]})\\
+\\
+\hat{T}_{[a, b]} = 
+T_{[a, b]} + 
+b_{\mathit{Re}}^{*} \cdot \mathit{Re}_{|a, b|} + 
+\mathrm{log}(S_{|a, b|}) +
+\begin{cases}
+b_{\mathit{Ra}_{1}} \cdot (X_{[b]} - X_{[a]}) &\hbox{if } \
+\mathit{R}_{[a]} < \mathit{R}_{[b]}\\
+b_{\mathit{Ra}_{2}} \cdot (X_{[b]} - X_{[a]}) &\hbox{if } \
+\mathit{R}_{[a]} \geqslant \mathit{R}_{[b]}\\
+\end{cases}\\
+\hat{T}_{[b, a]} = 
+T_{[b, a]} + 
+b_{\mathit{Re}}^{*} \cdot \mathit{Re}_{|a, b|} + 
+\mathrm{log}(S_{|a, b|}) +
+\begin{cases}
+b_{\mathit{Ra}_{1}} \cdot (X_{[a]} - X_{[b]}) &\hbox{if } \
+\mathit{R}_{[b]} < \mathit{R}_{[a]}\\
+b_{\mathit{Ra}_{2}} \cdot (X_{[a]} - X_{[b]}) &\hbox{if } \
+\mathit{R}_{[b]} \geqslant \mathit{R}_{[a]}\\
+\end{cases}\\
+\\
+\begin{pmatrix}
+G_{[a]}\\
+R_{[a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{G}^{2} & c_{GR}s_{G}s_{R}\\
+c_{GR}s_{G}s_{R} & s_{R}^{2}\\
+\end{pmatrix}
+\right]\\
+\begin{pmatrix}
+T_{[a, b]}\\
+T_{[b, a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{T}^{2} & c_{TT}s_{T}^{2}\\
+c_{TT}s_{T}^{2} & s_{T}^{2}\\
+\end{pmatrix}
+\right]\\
+\\
+D \sim \mathrm{Normal}(-1.5, 1)\\
+b_{\mathit{Re}}^{*}, b_{\mathit{Ra}_{1}}, b_{\mathit{Ra}_{2}} \sim \mathrm{Normal}(0, 0.6)\\
+s_{G}, s_{R}, s_{T} \sim \mathrm{Exponential}(1)\\
+c_{GR}, c_{TT} \sim \mathrm{LKJ}(3)
+\end{gather}
+$$
+
+## Stan code
+
+We display the adjusted SRM:
+
+```{r}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+srm_1.1 <- cmdstan_model("./stan_models/04/rel_rank.stan")
+(srm_1.2 <- cmdstan_model("./stan_models/04/rel.stan"))
+```
+
+## Running statistical model
+
+```{r, eval = FALSE}
+s_1.1 <- r.srm(data = d.1,
+                 stats_m = srm_1.1,
+                 param_2 = c("D", "s_G", "s_R", "s_T", "c_GR", "c_TT",
+                             "b_Re", "b_Ra[1]", "b_Ra[2]"))
+s_1.1 %>%
+  saveRDS("./fitted_models/04/1_fe_rel_rank.rds")
+
+s_1.2 <- r.srm(data = d.1,
+                 stats_m = srm_1.2,
+                 param_2 = c("D", "s_G", "s_R", "s_T", "c_GR", "c_TT",
+                             "b_Re"))
+s_1.2 %>%
+  saveRDS("./fitted_models/04/1_fe_rel.rds")
+```
+
+
+## Posterior
+
+We import posterior draws and plot marginal posteriors:
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 7
+s_1.1 <- readRDS("./fitted_models/04/1_fe_rel_rank.rds")
+s_1.2 <- readRDS("./fitted_models/04/1_fe_rel.rds")
+  fp.i.2(
+    t = t_1,
+    s = list(s_1.1, s_1.2),
+    heights = c(4.5, 3.5, 2.7),
+    sd_xlim = c(-0.2, 1.99),
+    oth_xlim = c(-3, 2)
+  )
+```
+
+## Social network
+
+(Nor displayed in the HTML document)
+
+```{r, eval = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+max_lim <- sn(data = d.1[[1]], output = "edges") %>% pull(grooming) %>% max(na.rm = T)
+d.1[[1]]$id$x <- d.1[[1]]$id$Ra
+
+# Group 1
+d.1[[1]]$id %>% filter(grp == 1)
+coord_1.1 <- tibble(
+  x = c(3, 4, 3,
+        1, 1, 1, 1,
+        2, 2, 2),
+  y = c(1, 1, 2,
+        4, 3, 2, 1,
+        3, 2, 1)
+)
+sn(data = d.1[[1]], subset_group = TRUE, grp_nb = 1, coord_df = coord_1.1,
+   col = "continuous", limits = c(1, max_lim))
+
+# Group 1
+d.1[[1]]$id %>% filter(grp == 2)
+coord_1.2 <- tibble(
+ x = c(3, 4, 3, 4,
+       1, 1, 1,
+       2, 3, 4, 3, 4,
+       2,
+       2, 2),
+  y = c(1, 1, 2, 2,
+        3, 2, 1,
+        4, 4, 4, 3, 3,
+        3,
+        2, 1)
+)
+sn(data = d.1[[1]], subset_group = TRUE, grp_nb = 2, coord_df = coord_1.2,
+   col = "continuous", limits = c(1, max_lim))
+
+# Group 3
+d.1[[1]]$id %>% filter(grp == 3)
+
+coord_1.3 <- tibble(
+  x = c(1, 2, 3, 4, 5,
+        1, 1, 1,
+        2, 3,
+        4, 5,
+        2, 3, 2, 3,
+        4, 4,
+        5, 5),
+  y = c(4, 4, 4, 4, 4,
+        3, 2, 1,
+        3, 3,
+        3, 3,
+        2, 2, 1, 1,
+        2, 1,
+        2, 1)
+)
+sn(data = d.1[[1]], subset_group = TRUE, grp_nb = 3, coord_df = coord_1.3,
+   col = "continuous", limits = c(1, max_lim))
+```
+
+Histogram of $y$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d.1[[1]]$df$y_ab,
+  d.1[[1]]$df$y_ba) %>%
+  hist.plot()
+```
+
+# With an effect of group size on delta
+
+## Running SCM
+
+```{r}
+set.seed(2666)
+d.2 <- scm.1(beta_GS = c(0.6, 0, -0.6))
+```
+
+```{r}
+t_2 <- tibble(
+  s_G = 0.5,
+  s_R = 0.5,
+  s_T = 0.5,
+  c_GR = 0,
+  c_TT = 0,
+  b_Re = 0.6,
+  `b_Ra[1]` = 0.8,
+  `b_Ra[2]` = 0
+) %>%
+  gather(param, value) %>%
+  slice(rep(1:n(), each = 2)) %>%
+  mutate(model = c(1, 2) %>% rep(length.out = n())) %>%
+  add_row(param = "d[1]", value = -1.2 + 0.6, model = 1) %>%
+  add_row(param = "d[2]", value = -1.2 + 0, model = 1) %>%
+  add_row(param = "d[3]", value = -1.2 -0.6, model = 1) %>%
+  add_row(param = "D", value = -1.2, model = 2) %>%
+  mutate(sim_n = 1)
+```
+
+## SRM (statistical model 4')
+
+## Description
+
+$$
+\begin{gather}
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+y_{[b, a]} \sim \mathrm{Poisson}(m_{[b, a]})\\
+\\
+m_{[a, b]} = \mathrm{exp}(d_{[\mathrm{gr}_{|a, b|}]} + G_{[a]} + R_{[b]} + \hat{T}_{[a, b]})\\
+m_{[b, a]} = \mathrm{exp}(d_{[\mathrm{gr}_{|a, b|}]} + G_{[b]} + R_{[a]} + \hat{T}_{[b, a]})\\
+\\
+\hat{T}_{[a, b]} = 
+T_{[a, b]} + b_{\mathit{Re}}^{*} \cdot \mathit{Re}_{|a, b|} + \mathrm{log}(S_{|a, b|}) +
+\begin{cases}
+b_{\mathit{Ra}_{1}} \cdot (X_{[b]} - X_{[a]}) &\hbox{if } \
+\mathit{R}_{[a]} < \mathit{R}_{[b]}\\
+b_{\mathit{Ra}_{2}} \cdot (X_{[b]} - X_{[a]}) &\hbox{if } \
+\mathit{R}_{[a]} \geqslant \mathit{R}_{[b]}\\
+\end{cases}\\
+\hat{T}_{[b, a]} = 
+T_{[b, a]} + b_{\mathit{Re}}^{*} \cdot \mathit{Re}_{|a, b|} + \mathrm{log}(S_{|a, b|}) +
+\begin{cases}
+b_{\mathit{Ra}_{1}} \cdot (X_{[a]} - X_{[b]}) &\hbox{if } \
+\mathit{R}_{[b]} < \mathit{R}_{[a]}\\
+b_{\mathit{Ra}_{2}} \cdot (X_{[a]} - X_{[b]}) &\hbox{if } \
+\mathit{R}_{[b]} \geqslant \mathit{R}_{[a]}\\
+\end{cases}\\
+\\
+\begin{pmatrix}
+G_{[a]}\\
+R_{[a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{G}^{2} & c_{GR}s_{G}s_{R}\\
+c_{GR}s_{G}s_{R} & s_{R}^{2}\\
+\end{pmatrix}
+\right]\\
+\begin{pmatrix}
+T_{[a, b]}\\
+T_{[b, a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{T}^{2} & c_{TT}s_{T}^{2}\\
+c_{TT}s_{T}^{2} & s_{T}^{2}\\
+\end{pmatrix}
+\right]\\
+\\
+d_{[1]}, d_{[2]}, d_{[3]} \sim \mathrm{Normal}(-1.5, 1)\\
+b_{\mathit{Re}}^{*}, b_{\mathit{Ra}_{1}}, b_{\mathit{Ra}_{2}} \sim \mathrm{Normal}(0, 0.6)\\
+s_{G}, s_{R}, s_{T} \sim \mathrm{Exponential}(1)\\
+c_{GR}, c_{TT} \sim \mathrm{LKJ}(3)
+\end{gather}
+$$
+
+## Stan code
+
+```{r}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+(srm_2.1 <- cmdstan_model("./stan_models/04/grp_rel_rank.stan"))
+```
+
+
+## Running statistical model
+
+```{r, eval = FALSE}
+s_2.1 <- r.srm(data = d.2,
+                 stats_m = srm_2.1,
+                 param_2 = c("D", "s_G", "s_R", "s_T", "c_GR", "c_TT",
+                             "b_Re", "b_Ra[1]", "b_Ra[2]",
+                             "d[1]", "d[2]", "d[3]"))
+s_2.1 %>%
+  saveRDS("./fitted_models/04/2_fe_grp_rel_rank.rds")
+
+s_2.2 <- r.srm(data = d.2,
+                 stats_m = srm_1.1,
+                 param_2 = c("D", "s_G", "s_R", "s_T", "c_GR", "c_TT",
+                             "b_Re", "b_Ra[1]", "b_Ra[2]"))
+s_2.2 %>%
+  saveRDS("./fitted_models/04/2_fe_rel_rank.rds")
+```
+
+Import posterior draws and plot them:
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 7
+s_2.1 <- readRDS("./fitted_models/04/2_fe_grp_rel_rank.rds")
+s_2.2 <- readRDS("./fitted_models/04/2_fe_rel_rank.rds")
+
+  fp.i.2(
+    t = t_2,
+    s = list(s_2.1, s_2.2),
+    heights = c(8, 3.5, 2.7),
+    sd_xlim = c(-0.2, 1.99),
+    oth_xlim = c(-4.3, 2.5)
+  )
+```
+
+
+## Social network
+
+(Nor displayed in the HTML document)
+
+```{r, eval = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+max_lim <- sn(data = d.2[[1]], output = "edges") %>% pull(grooming) %>% max(na.rm = T)
+d.2[[1]]$id$x <- d.2[[1]]$id$Ra
+
+# Group 1
+d.2[[1]]$id %>% filter(grp == 1)
+coord_2.1 <- tibble(
+  x = c(3, 4, 3,
+        1, 1, 1, 1,
+        2, 2, 2),
+  y = c(1, 1, 2,
+        4, 3, 2, 1,
+        3, 2, 1)
+)
+sn(data = d.2[[1]], subset_group = TRUE, grp_nb = 1, coord_df = coord_2.1,
+   col = "continuous", limits = c(1, max_lim))
+
+# Group 1
+d.2[[1]]$id %>% filter(grp == 2)
+coord_2.2 <- tibble(
+ x = c(3, 3, 3, 4, 4, 4,
+       1, 1, 1,
+       2, 2, 2,
+       2,
+       3, 4),
+  y = c(3, 2, 1, 3, 2, 1,
+        3, 2, 1,
+        3, 2, 1,
+        4, 
+        4, 4)
+)
+
+sn(data = d.2[[1]], subset_group = TRUE, grp_nb = 2, coord_df = coord_2.2,
+   col = "continuous", limits = c(1, max_lim))
+
+# Group 3
+d.2[[1]]$id %>% filter(grp == 3)
+
+coord_3.3 <- tibble(
+  x = c(1, 2, 3, 4, 5,
+        1,
+        4, 5, 4, 5, 4, 5,
+        3, 3, 3,
+        1, 1, 2, 2, 2),
+  y = c(4, 4, 4, 4, 4,
+        3,
+        3, 2, 1, 3, 2, 1,
+        3, 2, 1,
+        2, 1, 3, 2, 1)
+)
+sn(data = d.2[[1]], subset_group = TRUE, grp_nb = 3, coord_df = coord_3.3,
+   col = "continuous", limits = c(1, max_lim))
+```
+
+Histogram of observed edges:
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d.2[[1]]$df$y_ab, d.2[[1]]$df$y_ba) %>%
+  hist.plot()
+```
+
+

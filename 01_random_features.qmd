@@ -1,0 +1,436 @@
+---
+title: "Random features"
+author: Ben Kawam et al.
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(cmdstanr)
+  library(patchwork)
+
+# Functions
+  r.srm <- readRDS("./functions/r.srm.rds")
+  fp.i <- readRDS("./functions/fp.i.rds")
+  fp.i.split <- readRDS("./functions/fp.i.split.rds")
+  ivp <- readRDS("./functions/ivp.rds")
+  dvp <- readRDS("./functions/dvp.rds")
+  post_m <- readRDS("./functions/post_m.rds")
+  sn <- readRDS("./functions/sn.rds")
+  hist.plot <- readRDS("./functions/hist.plot.rds")
+```
+
+
+# SCM
+
+## Mathematical description
+
+$$
+\begin{align}
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim \mathrm{Normal}(0, 0.5)\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim \mathrm{Normal}(0, 0.5)\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(0, 0.5)\\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(0.2 + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+\end{align}
+$$
+for $a, b \in \{1, ..., N_{\mathrm{ind}}\}$.
+
+## Code
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show function:"
+scm.1 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural paramaters
+  delta = 0.2, # Baseline interaction rate (intercept)
+  sigma_gamma = 0.5, # SD of gamma
+  sigma_rho = 0.5, # SD of rho
+  sigma_tau = 0.5, # SD of tau
+  
+  # Nb of iterations
+  n_loops = 15
+  ){
+  
+  sim <- function() {
+    ## 1. Generate data
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      gamma = rnorm(N_ind, 0, sigma_gamma),
+      rho = rnorm(N_ind, 0, sigma_rho)
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+      tau_ab = rnorm(N_dyad, 0, sigma_tau),
+      tau_ba = rnorm(N_dyad, 0, sigma_tau)
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A attribute
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho) %>%
+      
+      # Add B attribute
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho) %>%
+      
+      # Rate
+      mutate(m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab),
+             y_ba = rpois(n(), m_ba))
+    
+    
+    ## 2. List format
+    d <- list(
+      # Observables
+      y_ab = df$y_ab,
+      y_ba = df$y_ba,
+      ind_a = df$ind_a,
+      ind_b = df$ind_b,
+      dyad = df$dyad,
+      
+      # Indices
+      N_ind = N_ind,
+      N_dyad = N_dyad,
+      N = nrow(df)
+    )
+    
+    ## 3. The function returns a list with generated data
+    list(df = df,
+         d = d,
+         id = ID_features) %>%
+      return()
+  }
+  
+  # Run the function over loops
+  data <- list()
+  for (i in 1:n_loops) {
+    data[[i]] <- sim()
+  }
+  
+  return(data)
+}
+```
+
+The output of the function is a list. On the first level of this list, there are (by default) 15 elements, corresponding to 15 iterations of the simulation. Each of the 15 elements, contains itself three objects:
+
+-   Generated observations in a tibble format.
+
+-   Generated observations in a list format, that can be used directly with Stan.
+
+-   A tibble with individual-level features.
+
+## Running SCM
+
+We run the SCM 15 times.
+
+```{r}
+set.seed(3666)
+d <- scm.1()
+d[[1]] %>% head()
+```
+
+Define target values:
+```{r}
+t_na <- tibble(
+  D = 0.2,
+  s_G = 0.5,
+  s_R = 0.5,
+  s_T = 0.5,
+  c_GR = 0,
+  c_TT = 0
+) %>%
+  
+  gather(param, value) %>%
+  mutate(sim_n = 1)
+```
+
+
+# SRM (statistical model 1)
+
+## Mathematical description
+
+$$
+\begin{gather}
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+y_{[b, a]} \sim \mathrm{Poisson}(m_{[b, a]})\\
+\\
+m_{[a, b]} = \mathrm{exp}(D + G_{[a]} + R_{[b]} + T_{[a, b]})\\
+m_{[b, a]} = \mathrm{exp}(D + G_{[b]} + R_{[a]} + T_{[b, a]})\\
+\\
+\begin{pmatrix}
+G_{[a]}\\
+R_{[a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{G}^{2} & c_{GR}s_{G}s_{R}\\
+c_{GR}s_{G}s_{R} & s_{R}^{2}\\
+\end{pmatrix}
+\right]\\
+\begin{pmatrix}
+T_{[a, b]}\\
+T_{[b, a]}\\
+\end{pmatrix} \sim
+\mathrm{MVNormal}
+\left[
+\begin{pmatrix}
+0\\
+0\\
+\end{pmatrix},
+\begin{pmatrix}
+s_{T}^{2} & c_{TT}s_{T}^{2}\\
+c_{TT}s_{T}^{2} & s_{T}^{2}\\
+\end{pmatrix}
+\right]\\
+\\
+D \sim \mathrm{Normal}(0, 1)\\
+s_{G}, s_{R}, s_{T} \sim \mathrm{Exponential}(1)\\
+c_{GR}, c_{TT} \sim \mathrm{LKJ}(2)
+\end{gather}
+$$
+
+## Stan code
+
+```{r}
+#| code-fold: true
+#| code-summary: "We load the Stan model"
+(srm <- cmdstan_model("./stan_models/01/basic.stan"))
+```
+
+## Running SRM
+
+We update the statistical models with simulated observations, and sample from the resulting posterior distribution.
+
+```{r, eval = FALSE}
+# Samples for pop-level param.
+s_fe_na <- r.srm(data = d,
+                 stats_m = srm)
+s_fe_na %>%
+  saveRDS("./fitted_models/01/fe_poisson_basic.rds")
+
+# Samples for ind.-level varying-effects param.
+s_vi_na <- r.srm(param = "v_ind",
+                 data = d,
+                 stats_m = srm,
+                 n_var = 10)
+s_vi_na %>%
+  saveRDS("./fitted_models/01/vi_poisson_basic.rds")
+
+# Samples for dyad-level varying-effects param.
+s_vd_na <- r.srm(param = "v_dyad",
+                 data = d,
+                 stats_m = srm,
+                 n_var = 10)
+s_vd_na %>%
+  saveRDS("./fitted_models/01/vd_poisson_basic.rds")
+
+# Samples for m
+s_m_na <- r.srm(param = "m",
+                 data = d,
+                 stats_m = srm,
+                 n_var = 10)
+s_m_na %>%
+  saveRDS("./fitted_models/01/m_poisson_basic.rds")
+```
+
+Load posterior draws:
+
+```{r}
+s_fe_na <- readRDS("./fitted_models/01/fe_poisson_basic.rds")
+s_vi_na <- readRDS("./fitted_models/01/vi_poisson_basic.rds")
+s_vd_na <- readRDS("./fitted_models/01/vd_poisson_basic.rds")
+```
+
+# Plot posterior
+
+We show marginal posterior distributions for the fixed effects and a number of varying-effects.
+
+```{r, warning = FALSE, message = FALSE}
+#| fig-width: 7
+#| fig-height: 7
+fp.i.split(samples = s_fe_na,
+          target = t_na)
+
+ivp(target_df = d[[1]]$df,
+      sample = s_vi_na,
+      n_var = 10)
+
+dvp(target_df = d[[1]]$df,
+      sample = s_vd_na,
+      n_var = 10)
+```
+
+# Supplementary plots
+
+## Prior checks for fixed effects
+
+Prior distributions of the hyperparameters:
+
+```{r, warning = FALSE, message = FALSE}
+#| fig-width: 7
+#| fig-height: 7
+  set.seed(2666)
+  n_s <- 1e5
+  fe <- tibble(  
+    sample = c(1:n_s),
+    s_G = rexp(n_s, 1),
+    s_R = rexp(n_s, 1),
+    s_T = rexp(n_s, 1),
+    c_GR = rlkjcorr(n_s, 2, eta = 2)[,,1][,2],
+    c_TT = rlkjcorr(n_s, 2, eta = 2)[,,1][,2],
+    D = rnorm(n_s, 0, 1)
+  )
+  
+  fe %>%
+  select(- sample) %>%
+  gather(param, value, 1:6) %>%
+  mutate(sim_n = 1) %>%
+  fp.i.split(target = t_na, 
+             prior = TRUE,
+             sd_xlim = c(-0.2, 4.1),
+             oth_xlim = c(-4, 4.1))
+```
+
+
+## Marginal posterior for $m_{[a, b]}$
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "Show code."
+s_m_na <- readRDS("./fitted_models/01/m_poisson_basic.rds")
+post_m(target_df = d[[1]]$df,
+         sample = s_m_na,
+         n_var = 10,
+         xmax = 17)
+```
+
+## Posterior ellipses for individual-level parameters
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code."
+#| fig-width: 7
+#| fig-height: 7
+ind_var_post <- s_vi_na %>%
+  mutate(ind = parse_number(param, locale = locale(grouping_mark = ".")),
+         param = str_extract(param, "[A-Z]")) %>%
+  select(-sim_n)
+
+ind_var_post <- ind_var_post %>%
+  filter(param == "G") %>%
+  rename(G = value) %>%
+  select(-param) %>% bind_cols(ind_var_post %>%
+                                 filter(param == "R") %>%
+                                 rename(R = value) %>%
+                                 select(-c(param, ind)))
+  
+  
+  ggplot(ind_var_post, aes(x = G, y = R, group = ind)) +
+  # Ellipses
+  stat_ellipse(
+    geom = "polygon",
+    fill = "#bdb79d",
+    col = "#40403b",
+    linewidth = 0.2,
+    level = 0.50,
+    alpha = 0.1,
+    type = "norm"
+  ) +
+  stat_ellipse(
+    geom = "polygon",
+    fill = "#bdb79d",
+    col = "#40403b",
+    linewidth = 0.2,
+    level = 0.25,
+    alpha = 0.2,
+    type = "norm"
+  )  +
+  stat_ellipse(
+    geom = "polygon",
+    fill = "#bdb79d",
+    col = "#40403b",
+    linewidth = 0.2,
+    level = 0.10,
+    alpha = 0.4,
+    type = "norm"
+  ) +
+    
+    geom_text(data = ind_var_post %>%
+    group_by(ind) %>%
+    summarise(G = median(G),
+              R = median(R)), aes(label = ind),
+                size = 3) +
+
+  # Layout
+  theme_bw() +
+  theme(
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major = element_line(color = "#ccccc0",
+                                      size = 0.4,
+                                      linetype = "dotted"),
+    strip.background = element_rect(fill = "white", color = "white")
+  ) +
+  xlim(c(-1.5, 1.5)) +
+  ylim(c(-1.5, 1.5))
+```
+
+## Network of interactions
+(not displayed in the html document)
+
+```{r, eval = FALSE}
+max_lim <- sn(data = d[[1]], output = "edges") %>% pull(grooming) %>% max(na.rm = T)
+sn(data = d[[1]], limits = c(1, max_lim))
+```
+
+Distribution of synthetic observations $y_{[a, b]}$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d[[1]]$df$y_ab, d[[1]]$df$y_ba) %>%
+hist.plot()
+```

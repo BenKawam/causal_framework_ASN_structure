@@ -1,0 +1,1006 @@
+---
+title: "Modelling the empirical data"
+author: Ben Kawam et al.
+format:
+  html: 
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+project:
+  execute-dir: project
+---
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We first load a few packages and functions."
+# Packages
+  library(tidyverse)
+  library(tidybayes)
+  library(rethinking)
+  library(patchwork)
+
+# Functions
+  r.srm <- readRDS("./functions/r.srm.rds")
+  fp <- readRDS("./functions/fp.rds")
+  sn <- readRDS("./functions/sn.rds")
+  hist.plot <- readRDS("./functions/hist.plot.rds")
+  
+# Import data
+  df <- readRDS("./data_assamese/df.rds")
+  d <- readRDS("./data_assamese/list.rds")
+  ID_features <- readRDS("./data_assamese/ID_features.rds")
+
+# dplyr options
+  options(dplyr.summarise.inform = FALSE)
+```
+
+
+# Empirical distributions
+
+## Histograms
+
+Distribution of observed edges $y_{[a, b]}$:
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d$y_ab,
+  d$y_ba) %>%
+  hist.plot()
+```
+
+Distribution of observed rates ($y_{[a, b]}/S_{|a, b|}$):
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 7
+#| fig-height: 3.5
+c(d$y_ab / d$s_ab,
+  d$y_ba  / d$s_ab) %>%
+  hist.plot(binw = 0.1)
+```
+
+
+Distribution of sampling effort $S_{|a, b|}$ (dyad-level):
+
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 7
+#| fig-height: 3.5
+d$s_ab %>%
+  hist.plot() +
+  xlim(c(0, 18))
+```
+
+Distribution of sampling effort $S_{[a]}$ (individual-level):
+
+```{r, warning=FALSE, message=FALSE}
+#| fig-width: 7
+#| fig-height: 3.5
+# y
+c(df$S_a, df$S_b) %>%
+  unique() %>%
+  hist.plot()  +
+  ylim(c(0, 15))  +
+  xlim(c(0, 10))
+```
+
+## Social network
+
+(Not displayed in the HTML doc)
+
+```{r, eval = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+# Max number of observation (to scale width of edges)
+  max_lim <- c(d$y_ab, d$y_ba) %>% max()
+
+# Reformatting of data
+  d_sn <- list()
+  d_sn$id <- ID_features
+  d_sn$id$ID <- ID_features$ind
+  d_sn$id$x <- ID_features$Ra
+  d_sn$id$grp <- d_sn$id$grp 
+  d_sn$df <- df
+  d_sn$df$grp <- df$gr_n
+  d_sn$df$ind_a <- df$ind_a
+  d_sn$df$ind_b <- df$ind_b
+
+# SST
+  d_sn$id %>% filter(grp == 3)
+  
+  # Coordinates
+  coord_sst <- tibble(
+    x = c(4,
+          1, 1, 2,
+          1, 1, 2, 2, 3, 3),
+    y = c(1,
+          4, 3, 3,
+          2, 1, 2, 1, 2, 1)
+  )
+  
+  # Plot
+  sn(data = d_sn, subset_group = TRUE, grp_nb = 3, coord_df = coord_sst,
+     col = "continuous", limits = c(1, max_lim), node_size = 9, text_size = 2.5)
+
+  # MST
+  d_sn$id %>% filter(grp == 2)
+  
+  # Coordinates
+  coord_mot <- tibble(
+    x = c(3, 3,
+          4, 4,
+          4,
+          3,
+          1, 1, 1, 2, 2, 2, 2,
+          3, 4),
+    y = c(3, 2,
+          4, 3, 
+          2,
+          4,
+          3, 2, 1, 4, 3, 2, 1,
+          1, 1)
+  )
+  
+  # Plot
+  sn(data = d_sn, subset_group = TRUE, grp_nb = 1, coord_df = coord_mot,
+     col = "continuous", limits = c(1, max_lim), node_size = 9, text_size = 2.5)
+  
+    # MOT
+  d_sn$id %>% filter(grp == 2)
+  
+  # Coordinates
+  coord_mst <- tibble(
+    x = c(3, 3, 3, 3, 4, 4, 4, 4,
+          5,
+          1, 1, 2, 2, 2,
+          1, 1, 2,
+          5, 5, 5),
+    y = c(4, 3, 2, 1, 4, 3, 2, 1,
+          1,
+          2, 1, 3, 2, 1,
+          4, 3, 4,
+          4, 3, 2)
+  )
+  
+  # Plot
+  sn(data = d_sn, subset_group = TRUE, grp_nb = 2, coord_df = coord_mst,
+     col = "continuous", limits = c(1, max_lim), node_size = 9, text_size = 2.5)
+```
+
+# Prior predictive checks
+
+We start by defining the hyperpriors.
+
+```{r}
+  set.seed(2666)
+  n_s <- 1000
+  fe <- tibble(  
+    sample = c(1:n_s),
+    s_G = rexp(n_s, 1),
+    s_R = rexp(n_s, 1),
+    s_T = rexp(n_s, 1),
+    c_GR = rlkjcorr(n_s, 2, eta = 3)[,,1][,2],
+    c_TT = rlkjcorr(n_s, 2, eta = 3)[,,1][,2],
+    b_Re = rnorm(n_s, 0, 0.6),
+    b_Ra_1 = rnorm(n_s, 0, 0.6),
+    b_Ra_2 = rnorm(n_s, 0, 0.6),
+    D = rnorm(n_s, -1.5, 1)
+  )
+```
+
+We then sample individual-level varying effects:
+
+```{r, warning=FALSE}
+## Individual var effects
+  vcov_ind <- list()
+  ind_ve <- list()
+  for(i in 1:n_s){
+    # one var-covar per prior sample: distribution of 1e3 matrices
+    vcov_ind[[i]] <- matrix(
+      c((fe$s_G[i] * fe$s_G[i]), (fe$c_GR[i] * fe$s_G[i] * fe$s_R[i]),
+        (fe$c_GR[i] * fe$s_G[i] * fe$s_R[i]), (fe$s_R[i] * fe$s_R[i])),
+      nrow = 2,
+      ncol = 2,
+      byrow = TRUE
+    )
+    
+    # We draw 20 ind per var covar matrix
+    ind_ve[[i]] <- MASS::mvrnorm(45,
+                              mu = c(0, 0),
+                              Sigma = vcov_ind[[i]]) %>%
+      as_tibble() %>%
+      rename(., G = V1, R = V2) %>%
+      mutate(
+        ind = c(1:45),
+        sample = i)
+  }
+  
+  # Collapse list to a 45,000 row tibble
+  ind_ve <- ind_ve %>% bind_rows() %>%
+    mutate(rank = runif(n(), min = 0, max = 1))
+  ind_ve %>% head()
+```
+
+Then, dyad-level varying effects:
+
+```{r}
+## Dyad parameters
+  vcov_dyad <- list()
+  dyad_ve <- list()
+  for(i in 1:n_s){
+    # one var-covar per sample
+    vcov_dyad[[i]] <- matrix(
+      c((fe$s_T[i] * fe$s_T[i]), (fe$c_TT[i] * fe$s_T[i] * fe$s_T[i]),
+        (fe$c_TT[i] * fe$s_T[i] * fe$s_T[i]), (fe$s_T[i] * fe$s_T[i])),
+      nrow = 2,
+      ncol = 2,
+      byrow = TRUE
+    )
+    
+    # Sample 340 dyads per var covar matrix
+    dyad_ve[[i]] <- MASS::mvrnorm(340,
+                                  mu = c(0, 0),
+                                  Sigma = vcov_dyad[[i]]) %>%
+      as_tibble() %>%
+      rename(Tab = V1, Tba = V2) %>%
+      mutate(
+        dyad = c(1:340),
+        sample = i)
+  }
+  
+  # Collapse list to a 340,000 row tibble
+  dyad_ve <- dyad_ve %>% bind_rows() %>%
+    mutate(rel = sample(c(0, 1), size = n(), replace = TRUE),
+           Z = runif(n(), 0, 1))
+  dyad_ve %>% head()
+```
+
+Next, we construct three groups (10, 15, and 20 individuals).
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code."
+#| fig-width: 7
+#| fig-height: 3.5
+## Generate dyads for three groups of respectively 10, 15, 20 individuals
+  grp_features <- tibble(
+    grp = c(1:3),
+    GS = c(10, 15, 20),
+    first_ind = lag(GS, default = 0) %>% cumsum() + 1,
+    last_ind = first_ind + GS - 1
+  )
+  
+  # individuals 1-10
+  dyads <- tibble(
+    ind_a = t(combn(grp_features$first_ind[1]:grp_features$last_ind[1], 2))[, 1],
+    ind_b = t(combn(grp_features$first_ind[1]:grp_features$last_ind[1], 2))[, 2]
+    ) %>%
+    # Ind 11-25
+    bind_rows(
+      tibble(
+        ind_a = t(combn(grp_features$first_ind[2]:grp_features$last_ind[2], 2))[, 1],
+        ind_b = t(combn(grp_features$first_ind[2]:grp_features$last_ind[2], 2))[, 2]
+      )
+    ) %>%
+    # Ind 26-45
+    bind_rows(
+      tibble(
+        ind_a = t(combn(grp_features$first_ind[3]:grp_features$last_ind[3], 2))[, 1],
+        ind_b = t(combn(grp_features$first_ind[3]:grp_features$last_ind[3], 2))[, 2]
+      )
+    ) %>%
+    # dyad number
+    mutate(dyad = 1:n()) %>%
+    slice(rep(1:n(), each = n_s)) %>%
+    mutate(sample = c(1:n_s) %>% rep(length.out = n()))
+  # We obtain one row per combination of sample {1:1000} and dyad {1:340}
+  nrow(unique(dyads[, c('dyad', 'sample')])) == nrow(dyads) # test
+```
+
+We finally generate rates and observations:
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+## Combine samples and dyads
+  prior_sim <- dyads %>%
+    left_join(dyad_ve, by = c("sample", "dyad")) %>%
+    # Add A attribute
+    left_join(ind_ve, by = c("ind_a" = "ind", "sample")) %>%
+    rename(Ga = G, Ra = R, Ra_a = rank)  %>%
+    # Add B attribute
+    left_join(ind_ve, by = c("ind_b" = "ind", "sample")) %>%
+    rename(Gb = G, Rb = R, Ra_b = rank) %>%
+    # Add population attributes
+    left_join(fe %>% select(sample, b_Re, b_Ra_1, b_Ra_2, D), by = "sample") %>%
+    
+    # Gen quantitites
+    mutate(psi_ab = D + Ga + Rb + Tab,
+           psi_ba = D + Gb + Ra + Tba,
+           m_ab = exp(D + Ga + Rb + Tab +
+                      b_Re * rel +
+                      ifelse(Ra_a < Ra_b, 
+                             b_Ra_1 * (Ra_b - Ra_a),
+                             b_Ra_2 * (Ra_b - Ra_a))),
+           m_ba = exp(D + Gb + Ra + Tba +
+                        b_Re * rel +
+                        ifelse(Ra_b < Ra_a, 
+                               b_Ra_1 * (Ra_a - Ra_b),
+                               b_Ra_2 * (Ra_a - Ra_b))),
+           y_ab = rpois(n(), m_ab),
+           y_ba = rpois(n(), m_ba))
+```
+
+We plot the rates $m$:
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code."
+#| fig-width: 7
+#| fig-height: 3.5
+# mab
+  prior_sim %>%
+    filter(sample < 21) %>%
+    select(m_ab, m_ba, sample) %>%
+    gather(param, m, 1:2) %>%
+    ggplot(aes(x = m, group = sample)) +
+    stat_slab(
+      slab_color = NA,
+      fill = "#d9c2ad",
+      scale = 0.9,
+      normalize = "groups",
+      slab_alpha = 0.2,
+      density = "bounded",
+      trim = FALSE
+    ) +
+    
+    stat_slab(
+      slab_color = "#363533",
+      fill = NA,
+      slab_linewidth = 0.3,
+      scale = 0.9,
+      normalize = "groups",
+      slab_alpha = 0.3,
+      density = "bounded",
+      trim = FALSE
+    ) +
+
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(
+        color = "#ccccc0",
+        linewidth = 0.3,
+        linetype = "dotted"),
+      panel.border = element_blank(),
+      strip.background = element_rect(fill = "white", color = "white")) +
+    labs(y = "", x = "") +
+    xlim(c(-1, 24))
+```
+
+Distribution of observations $y$:
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code."
+#| fig-width: 7
+#| fig-height: 3.5
+ prior_sim %>%
+    filter(sample < 21) %>%
+    select(y_ab, y_ba, sample) %>%
+    gather(param, y, 1:2) %>%
+    ggplot(aes(x = y, group = sample)) +
+    
+    geom_freqpoly(binwidth = 1, 
+                  col = "#c4a386",
+                  alpha = 0.35,
+                  linewidth = 0.5) +
+    geom_point(stat = "bin", aes(y = after_stat(count)), 
+               binwidth = 1,
+               fill = "#c4a386",
+               pch = 21,
+               colour = "white",
+               alpha = 0.7,
+               size = 1.7) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(
+        color = "#ccccc0",
+        linewidth = 0.3,
+        linetype = "dotted"),
+      panel.border = element_blank(),
+      strip.background = element_rect(fill = "white", color = "white")) +
+    labs(y = "", x = "") +
+    xlim(c(-1, 24))
+```
+
+Observations $y$ for 10%, 50%, and 90% quantiles of $m$:
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 3.5
+  # pred for m_hat
+    tibble(m_hat = 
+             prior_sim %>% 
+             pull(m_ab, m_ba) %>% 
+             quantile(c(.1, .5, .9)) %>%
+             round(digits = 2)) %>%
+    slice(rep(1:n(), each = 1e3)) %>%
+    mutate(y = rpois(n(), m_hat)) %>%
+      ggplot() +
+      geom_histogram(aes(x = y, y = after_stat(ncount)),
+                     binwidth = 1,
+                     color = "#f7f7f0",
+                     linewidth = 0.5,
+                     fill = "#d9c2ad") +
+      facet_wrap(~ m_hat, ncol = 1) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(vjust = 0),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank(),
+        panel.grid.major.y = element_line(
+          color = "#ccccc0",
+          size = 0.3,
+          linetype = "dotted"),
+        panel.border = element_blank(),
+        strip.background = element_rect(fill = "white", color = "white"),
+        plot.margin = margin(1, 0, 0, 0, "cm")
+      ) +
+      labs(y = "", x = "") +
+      scale_x_continuous(expand = c(0.02, 0), limits = c(-1, 24))
+```
+
+Distribution of slopes:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 6
+#| fig-height: 8
+set.seed(3666)
+    prior_sim %>%
+      filter(sample %in% sample(1:1000, 24, replace = FALSE)) %>%
+      mutate(raw_id = paste0(sample, "_", dyad)) %>%
+      expand(nesting(.), X = seq(
+        from = 0,
+        to = 1,
+        length.out = 101
+      )) %>%
+      mutate(m_ab = exp(psi_ab + b_Re * X),
+             m_ba = exp(psi_ba + b_Re * X)) %>%
+
+      # Plot
+      ggplot(aes(x = X, y = m_ba, group = raw_id)) +
+      # Layout
+      theme_bw() +
+      facet_wrap(~ sample, ncol = 4) +
+      theme(
+        axis.text = element_text(size = 8),
+        axis.ticks = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(
+          color = "#c2c2b0",
+          size = 0.2,
+          linetype = "dotted"
+        ), 
+        strip.background = element_rect(
+          color = "white", fill="white"),
+        strip.text = element_blank()
+      ) +
+      geom_line(alpha = 0.1) +
+      ylim(c(-1, 22)) +
+      xlim(c(-0.05, 1.05)) +
+      labs(x = "", y = "")
+```
+
+
+# Posterior model
+
+## Running models
+
+```{r, eval = FALSE}
+# Stat model 4: Adjusted by relatedness, rank, and sampling effort
+srm_1 <- cmdstan_model("./stan_models/04/rel_rank.stan")
+m1 <- srm_1$sample(
+      data = d,
+      iter_warmup = 2e3,
+      iter_sampling = 2e3,
+      chains = 4,
+      parallel_chains = 4
+    )  
+m1$summary() %>% saveRDS("./fitted_models/05/rel_rank_sum.rds")
+m1$draws() %>% saveRDS("./fitted_models/05/rel_rank_draws.rds")
+m1 <- m1 %>% tidy_draws() 
+m1 %>% saveRDS("./fitted_models/05/rel_rank.rds")
+
+# Stat model 4 as well, with expected values as transformed parameters
+srm_2 <- cmdstan_model("./stan_models/04/rel_rank_tp.stan")
+m1.2 <- srm_2$sample(
+      data = d,
+      iter_warmup = 2e3,
+      iter_sampling = 2e3,
+      chains = 4,
+      parallel_chains = 4
+    ) %>% tidy_draws()
+m1.2 %>% saveRDS("./fitted_models/05/rel_rank_tp.rds")
+
+# Stat model 4': Adjusted by relatedness, rank, sampling effort, and group
+srm_3 <- cmdstan_model("./stan_models/04/grp_rel_rank.stan")
+m2 <- srm_3$sample(
+      data = d,
+      iter_warmup = 2e3,
+      iter_sampling = 2e3,
+      chains = 4,
+      parallel_chains = 4
+    ) %>% tidy_draws()
+m2 %>% saveRDS("./fitted_models/05/grp_rel_rank.rds")
+```
+
+## Marginal posteriors
+
+Import posterior draws and plot them. First, the marginal posterior distribution of the fixed effects:
+
+```{r, warning = FALSE, message = FALSE}
+#| fig-width: 7
+#| fig-height: 6
+# Not stratified by group size (stat model 4)
+m1 <- readRDS("./fitted_models/05/rel_rank.rds")
+m1 %>%
+     fp(limo = c(-3.2, 2.5),
+     vec_param = c("D", "b_Re", "b_Ra[2]", "b_Ra[1]"))
+
+# Stratified by group size (stat model 4')
+m2 <- readRDS("./fitted_models/05/grp_rel_rank.rds")
+m2 %>%
+  fp(limo = c(-3.2, 2.1),
+     vec_param = c("b_Re", "b_Ra[1]", "b_Ra[2]", "d[1]", "d[2]", "d[3]"))
+```
+
+## $\psi_{[a, b]}$
+
+$\psi_{[a, b]}$ is a generated parameter. It is defined as:
+$$
+    \psi_{[a, b]} =
+        D +
+        G_{[a]} +
+        R_{[b]} +        
+        T_{[a, b]}
+$$
+
+We show the distribution of $\psi_{[a, b]}$'s posterior means:
+
+```{r, warning=FALSE}
+#| fig-width: 7
+#| fig-height: 3.5
+#| code-fold: true
+#| code-summary: "Show code:"
+# Extract expected values
+m1.2 <- readRDS("./fitted_models/05/rel_rank_tp.rds")
+
+# Posterior means
+psi <- m1.2 %>%
+  select(starts_with("psi")) %>%
+  gather(param, value) %>%
+  group_by(param) %>%
+  summarise(value = mean(value)) %>%
+  pull(value)
+  
+# 10, 50, and 90% percentiles
+psi_hat <- psi %>%
+  quantile(c(.1, .5, .9))
+
+# Plot
+psi %>% 
+  hist.plot(binw = 0.2, fill = "#c4bcaf", linewidth = 0.5) +
+  ylim(c(-2, 100)) +
+  geom_point(data = tibble(y = 0.2, x = psi_hat), aes(x = x, y = y), 
+             col = "white", fill = "#37807e", size = 3, pch = 21)
+```
+
+## Posterior estimates for relatedness
+
+CATE for three baselines $\psi$.
+```{r}
+# Contrasts for the three psi
+  a <- (exp(psi_hat[1] + m1$b_Re) -
+          exp(psi_hat[1]))
+  
+  b <- (exp(psi_hat[2]  + m1$b_Re) -
+          exp(psi_hat[2]))
+  
+  c <- (exp(psi_hat[3] + m1$b_Re) -
+          exp(psi_hat[3]))
+```
+
+Plot:
+
+```{r, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 3.5
+# Plot
+  tibble(theta = c("1", "2", "3") %>% rep(each = 8e3),
+         value = c(a, b, c)) %>%
+    
+    ggplot(aes(
+      x = value,
+      fill = as.factor(theta),
+      group = as.factor(theta)
+    )) +
+    theme_bw() +
+    geom_hline(
+      yintercept = 0,
+      color = "#b8b5ab",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_blank(),
+      axis.text.x = element_text(vjust = -1.5),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.x = element_line(
+        color = "#c2c2b0",
+        size = 0.3,
+        linetype = "dotted"
+      ),
+      strip.background = element_rect(fill = "white", color = "white")
+    ) + stat_slab(
+      slab_color = "#363533",
+      slab_linewidth = 0.2,
+      scale = 0.7,
+      normalize = "groups",
+      slab_alpha = 0.5,
+      density = "bounded",
+      trim = FALSE
+    ) +
+    labs(x = "", y = "") +
+    geom_vline(
+      xintercept = 0,
+      color = "#6e6d67",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ) +
+    scale_fill_manual(values = c("#999388", "#c4bcaf", "#ded6c8")) +
+    scale_x_continuous(breaks = (seq(min(-0.4), max(0.4), by = 0.1)) %>%
+                         round(1), limits = c(-0.4, 0.4))
+```
+
+Counterfactual outcomes:
+
+```{r}
+# Outcomes for the two values of rel
+  a <- exp(m1$D)
+  b <- exp(m1$D + m1$b_Re)
+```
+
+Plot:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 3.5
+# Plot
+  tibble(treatment = c("1", "0") %>% rep(each = 8e3),
+         value = c(a, b)) %>%
+    ggplot(aes(
+      x = value,
+      fill = treatment,
+      group = treatment,
+      linetype = treatment
+    )) +
+    theme_bw() +
+    geom_hline(
+      yintercept = 0,
+      color = "#b8b5ab",
+      linewidth = 0.3,
+      linetype = "dotted"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_blank(),
+      axis.text.x = element_text(vjust = -1.5),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.x = element_line(
+        color = "#c2c2b0",
+        size = 0.3,
+        linetype = "dotted"
+      ),
+      strip.background = element_rect(fill = "white", color = "white")
+    ) +
+    
+    stat_slab(
+      slab_color = "#2b2a2a",
+      slab_linewidth = 0.4,
+      scale = 0.7,
+      normalize = "groups",
+      slab_alpha = 0.5,
+      density = "bounded",
+      trim = FALSE
+    ) +
+    labs(x = "", y = "") +
+    scale_fill_manual(values = c("#c4bcaf", "transparent")) +
+    scale_x_continuous(breaks = (seq(min(-0.5), max(0.9), by = 0.1)) %>%
+                         round(1), limits = c(0, 0.4))
+```
+
+## Posterior estimates for rank
+
+Rank effect:
+```{r}
+# 1e3 samples
+  m1_s_mod <- m1 %>% slice(1:1000)
+
+# 9 differences in dominance rank (from -1 to 1)
+  d1 <- (1 - 0)
+  d2 <- (1 - 0.25)
+  d3 <- (1 - 0.5)
+  d4 <- (1 - 0.75)
+  d5 <- 0
+  d6 <- (0 - 0.25)
+  d7 <- (0 - 0.5)
+  d8 <- (0 - 0.75)
+  d9 <- (0 - 1)
+
+# Outcomes for these 9 differences
+  s1 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[1]` * d1)
+  s2 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[1]` * d2)
+  s3 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[1]` * d3)
+  s4 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[1]` * d4)
+  s5 <- exp(m1_s_mod$D)
+  s6 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[2]` * d6)
+  s7 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[2]` * d7)
+  s8 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[2]` * d8)
+  s9 <- exp(m1_s_mod$D + m1_s_mod$`b_Ra[2]` * d9)
+```
+
+Plot:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show code:"
+#| fig-width: 7
+#| fig-height: 3.5
+# Plot
+  tibble(
+    samples = c(s1, s2, s3, s4, s5, s6, s7, s8, s9),
+    X = c(d1, d2, d3, d4, d5, d6, d7, d8, d9) %>% rep(each = 1000)
+  ) %>%
+    ggplot(aes(x = X, y = samples)) +
+    geom_vline(
+      xintercept = 0,
+      color = "#6e6d67",
+      linewidth = 0.4,
+      linetype = "dotted"
+    ) +
+    tidybayes::stat_interval(.width = c(.4, .75, .89), size = 3) +
+    scale_color_manual(values = c("#ded6c8", "#c4bcaf", "#999388")) +
+    theme_bw() +
+    theme(
+      legend.position = "none",
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major = element_line(
+        color = "#ccccc0",
+        size = 0.4,
+        linetype = "dotted"
+      ),
+      strip.background = element_rect(fill = "white", color = "white")
+    ) +
+    labs(x = "", y = "") +
+    ylim(c(0, 0.22))
+```
+
+## Posterior predictions
+
+Posterior predictive distribution of $y_{[a, b]}$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 3.5
+#| code-fold: true
+#| code-summary: "Show code:"
+# Extract expected values
+set.seed(3666)
+m1.2 %>%
+  select(starts_with("m_ab")) %>%
+  slice(1:40) %>%
+  mutate(draw = 1:n()) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  mutate(direction = 1) %>%
+  
+  bind_rows(m1.2 %>%
+  select(starts_with("m_ba")) %>%
+  slice(1:40) %>%
+  mutate(draw = 1:n()) %>%
+  gather(param, value, 1:(ncol(.) - 1)) %>%
+  mutate(direction = 2)) %>%
+    tibble() %>%
+    mutate(m = exp(value),
+           y = rpois(n(), m)) %>%
+    group_by(draw, y) %>%
+    summarise(count = n()) %>%
+    
+    ggplot(aes(x = y, y = count)) +
+    geom_col(data = tibble(y = c(d$y_ab,
+  d$y_ba)) %>%
+    group_by(y) %>%
+    summarise(count = n()),
+    color = "#e6e4e1",
+    linewidth = 0.1,
+    fill = "#27495c") +
+    
+    geom_line(aes(group = draw),
+              col = "#9e6a7d",
+              alpha = 0.3,
+              linewidth = 0.3) + 
+    geom_point(aes(group = draw),
+               fill = "#9e6a7d",
+               pch = 21,
+               colour = "white",
+               size = 2,
+               alpha = 0.6) +
+
+    theme_bw() +
+    theme(
+    axis.text.x = element_text(size = 10),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major.y = element_line(
+      color = "#ccccc0",
+      linewidth = 0.3,
+      linetype = "dotted"),
+    panel.border = element_blank(),
+    strip.background = element_rect(fill = "white", color = "white"),
+    plot.margin = margin(1, 0, 0, 0, "cm")) +
+  labs(y = "", x = "")
+```
+
+Dyad-specific posterior predictive distribution of $y_{[a, b]}$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 7
+#| code-fold: true
+#| code-summary: "Show code:"
+emp_data <- df %>% 
+  select(dyad, y_ab, y_ba) %>%
+  mutate(dyad = paste0("m[", dyad, "]")) %>%
+  slice(1:9) %>%
+  rename("1" = y_ab, "2" = y_ba, param = dyad) %>%
+  gather(direction, y, 2:3) %>%
+  mutate(direction = as.numeric(direction))
+
+m1.2 %>%
+  select(starts_with("m_ab")) %>%
+  select(1:9) %>%
+  gather(param, value, 1:9) %>%
+  mutate(across("param", \(x) str_replace(x, 'm_ab', 'm'))) %>%
+  
+  mutate(direction = 1) %>% bind_rows(
+    
+  m1.2 %>%
+  select(starts_with("m_ba")) %>%
+  select(1:9) %>%
+  gather(param, value, 1:9)  %>%
+  mutate(across("param", \(x) str_replace(x, 'm_ba', 'm'))) %>%
+  mutate(direction = 2)
+  ) %>%
+  mutate(m = exp(value),
+         y = rpois(n(), m)) %>%
+  
+  ggplot(aes(x = y)) +
+  geom_histogram(binwidth = 1,
+               fill = "#e0ccd3",
+               colour = "white") +
+  facet_grid(param ~ direction) +
+    theme_bw() +
+    theme(
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    strip.background = element_rect(fill = "white", color = "white"),
+    plot.margin = margin(0, 0, 0, 0, "cm")
+    ) +
+    geom_hline(yintercept = 0, color = "#6e6d67", linewidth = 0.3, linetype = "dotted") +
+  labs(y = "", x = "") +
+  
+  geom_point(data = emp_data,
+             aes(y = 0),
+             pch = 21,
+             fill = "#27495c",
+             color = "white",
+             size = 2
+             )
+```
+
+# MCMC diagnostics
+
+## Rhat
+
+```{r, warning=FALSE}
+#| fig-width: 7
+#| fig-height: 3.5
+#| code-fold: true
+#| code-summary: "Show code:"
+# Rhats
+  m1_sum <- readRDS("./fitted_models/05/rel_rank_sum.rds")
+  m1_sum[, 8] %>%
+    pull(rhat) %>%
+    hist.plot(binw = 0.0001) +
+    ylim(c(-1, 90))
+
+# ESS bulk
+  m1_sum[, 9] %>%
+    pull(ess_bulk) %>%
+    hist.plot(binw = 500) +
+     geom_vline(xintercept = 500, linewidth = 0.4, linetype = "dotted",
+                color = "#ccccc0") +
+    ylim(c(-1, 80)) +
+    xlim(c(-1, 20500))
+
+# ESS tail
+  m1_sum[, 10] %>%
+    pull(ess_tail) %>%
+    hist.plot(binw = 150) +
+     geom_vline(xintercept = 500, linewidth = 0.4, linetype = "dotted",
+                color = "#ccccc0") +
+    ylim(c(-1, 130))
+```
+
+Traceplots:
+
+```{r, message=FALSE}
+#| fig-width: 7
+#| fig-height: 7
+#| code-fold: true
+#| code-summary: "Show code:"
+# Traceplot
+  readRDS("./fitted_models/05/rel_rank_draws.rds") %>%
+    bayesplot::mcmc_trace(
+      regex_pars = c("b_Re", "D", "b_Ra", "s_G",
+                     "s_R", "s_T", "c_GR",
+                     "c_TT"),
+      size = 0.1
+    ) +
+    scale_color_manual(values = c('#F6D99D', "#D58761", '#77A4B9', '#225477')) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 10),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(
+        color = "#ccccc0",
+        linewidth = 0.3,
+        linetype = "dotted"
+      ),
+      panel.border = element_rect(linewidth = 0.4),
+      legend.position = "none",
+      strip.background = element_rect(fill = "white", color = "white"),
+      plot.margin = margin(1, 1, 1, 1, "cm")
+    )
+```
+
+
