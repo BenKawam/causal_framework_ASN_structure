@@ -467,7 +467,7 @@ Observations $y$ for 10%, 50%, and 90% quantiles of $m$:
 
 Distribution of slopes:
 
-```{r}
+```{r, warning=FALSE}
 #| code-fold: true
 #| code-summary: "Show code:"
 #| fig-width: 6
