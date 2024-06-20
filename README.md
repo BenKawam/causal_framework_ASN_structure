@@ -17,7 +17,6 @@ The notebooks can be read as a _HTML_ documents using any web browser, or can be
 - `functions`: functions used in the Quarto notebooks (see details below).
 - `stan_models`: stan models called in the the notebooks.
 - `fitted_models`: posterior samples (tibble format) obtained in the notebooks. These files are *untracked* due to their large size.
-- `figures`: vectorial figures generated: (i) from the notebooks; (ii) with TikZ; (iii) with Adbobe Illustrator; (iv) with a combination of (i), (ii), and/or (iii).
 - `data_assamese`: empirical data collected in a wild population of Assamese macaques.
 
 
