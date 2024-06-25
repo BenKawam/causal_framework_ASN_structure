@@ -1,6 +1,5 @@
 ---
 title: "Individual-level features"
-author: Ben Kawam et al.
 format:
   html: 
     self-contained: true

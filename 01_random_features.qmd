@@ -1,6 +1,5 @@
 ---
 title: "Random features"
-author: Ben Kawam et al.
 format:
   html: 
     self-contained: true
