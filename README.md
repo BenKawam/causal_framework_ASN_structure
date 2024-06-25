@@ -2,7 +2,7 @@
 
 ## Organisation of the repository
 We ran five studies. 
-Four of them only implied synthetic data. 
+Four of them involved synthetic data. 
 In the last one, we analysed an empirical data set collected in Assamese macaques.
 The studies can be found in the Quarto notebooks that are located in the source directory. 
 They are the central thread of this repository, and can be read/ran independently from one another.
