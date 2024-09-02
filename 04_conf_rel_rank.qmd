@@ -308,8 +308,8 @@ We display the adjusted SRM:
 ```{r}
 #| code-fold: true
 #| code-summary: "We first load a few packages and functions."
-srm_1.1 <- cmdstan_model("./stan_models/04/rel_rank.stan")
-(srm_1.2 <- cmdstan_model("./stan_models/04/rel.stan"))
+(srm_1.1 <- cmdstan_model("./stan_models/04/rel_rank.stan"))
+srm_1.2 <- cmdstan_model("./stan_models/04/rel.stan")
 ```
 
 ## Running statistical model
