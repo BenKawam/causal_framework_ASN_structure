@@ -21,14 +21,14 @@ parameters{
   matrix[2, 2] b;
 
   // Individual varying effects
-  matrix[2, N_ind] z_K; // z_G_j and z_R_j (horizontal)
-  real<lower = 0> s_G; // Variance in G_j
-  real<lower = 0> s_R; // Variance in R_j
+  matrix[2, N_ind] z_K; // z_G and z_R (horizontal)
+  real<lower = 0> s_G; // SD of G
+  real<lower = 0> s_R; // SD of R
   cholesky_factor_corr[2] L_ind; // Cholesky factor of corr. matrix
   
   // Dyadic varying effects
   matrix[2, N_dyad] z_T; // z_T_ab and z_T_ba (wide format)
-  real<lower = 0> s_T; // Unique variance for directed ties
+  real<lower = 0> s_T; // Unique SD of directed ties
   cholesky_factor_corr[2] L_dyad; // Cholesky factor of corr. matrix
 }
 
@@ -36,7 +36,7 @@ parameters{
 model{
   // Param
     // Individual varying effects 
-    matrix[N_ind, 2] K; // K matrix (i.e. Gi and Ri): vertical format
+    matrix[N_ind, 2] K; // K matrix (i.e. G and R): vertical format
     K = (diag_pre_multiply([s_G, s_R], L_ind) * z_K)';
     
     // Rename individual random effects

@@ -3400,14 +3400,14 @@ parameters{
   vector[2] b_Ra;
 
   // Individual varying effects
-  matrix[2, N_ind] z_K; // z_G_j and z_R_j (horizontal)
-  real&lt;lower = 0&gt; s_G; // Variance in G_j
-  real&lt;lower = 0&gt; s_R; // Variance in R_j
+  matrix[2, N_ind] z_K; // z_G and z_R (horizontal)
+  real&lt;lower = 0&gt; s_G; // SD of G
+  real&lt;lower = 0&gt; s_R; // SD of R
   cholesky_factor_corr[2] L_ind; // Cholesky factor of corr. matrix
   
   // Dyadic varying effects
   matrix[2, N_dyad] z_T; // z_T_ab and z_T_ba (wide format)
-  real&lt;lower = 0&gt; s_T; // Unique variance for directed ties
+  real&lt;lower = 0&gt; s_T; // Unique SD of directed ties
   cholesky_factor_corr[2] L_dyad; // Cholesky factor of corr. matrix
 }
 
@@ -3431,7 +3431,7 @@ model{
     
   // Param
     // Individual varying effects 
-      matrix[N_ind, 2] K; // K matrix (i.e. Gi and Ri): vertical format
+      matrix[N_ind, 2] K; // K matrix (i.e. G and R): vertical format
       K = (diag_pre_multiply([s_G, s_R], L_ind) * z_K)&#39;;
       
       // Rename individual random effects
@@ -3739,14 +3739,14 @@ parameters{
   vector[2] b_Ra;
 
   // Individual varying effects
-  matrix[2, N_ind] z_K; // z_G_j and z_R_j (horizontal)
-  real&lt;lower = 0&gt; s_G; // Variance in G_j
-  real&lt;lower = 0&gt; s_R; // Variance in R_j
+  matrix[2, N_ind] z_K; // z_G and z_R (horizontal)
+  real&lt;lower = 0&gt; s_G; // SD of G
+  real&lt;lower = 0&gt; s_R; // SD of R
   cholesky_factor_corr[2] L_ind; // Cholesky factor of corr. matrix
   
   // Dyadic varying effects
   matrix[2, N_dyad] z_T; // z_T_ab and z_T_ba (wide format)
-  real&lt;lower = 0&gt; s_T; // Unique variance for directed ties
+  real&lt;lower = 0&gt; s_T; // Unique SD of directed ties
   cholesky_factor_corr[2] L_dyad; // Cholesky factor of corr. matrix
 }
 
@@ -3770,7 +3770,7 @@ model{
     
   // Param
     // Individual varying effects 
-      matrix[N_ind, 2] K; // K matrix (i.e. Gi and Ri): vertical format
+      matrix[N_ind, 2] K; // K matrix (i.e. G and R): vertical format
       K = (diag_pre_multiply([s_G, s_R], L_ind) * z_K)&#39;;
       
       // Rename individual random effects
