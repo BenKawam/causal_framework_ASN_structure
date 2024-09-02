@@ -359,8 +359,8 @@ X_{[a, b]} = [X_{[a]}, X_{[b]}]\\
 f_{\psi} :  \hspace{0.5cm} &
 \psi =
 \begin{pmatrix}
--1 & 0.5\\
-0 & 0.5
+-1 & 0\\
+0.5 & 0.5
 \end{pmatrix}\\
 \\
 f_{\gamma} : \hspace{0.5cm} &
