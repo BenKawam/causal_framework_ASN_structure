@@ -7,6 +7,8 @@ In the last one, we analysed an empirical data set collected in Assamese macaque
 The studies can be found in the Quarto notebooks that are located in the source directory. 
 They are the central thread of this repository, and can be read/ran independently from one another.
 The notebooks can be read as a _HTML_ files (see hyperlinks below) using any web browser, or can be opened in R as a _.qmd_ documents.
+More information can be found in [*our manuscript*](https://www.biorxiv.org/content/10.1101/2024.06.26.600748v2).
+
 -   [`01_random_features`](https://htmlpreview.github.io/?https://github.com/BenKawam/causal_framework_ASN_structure/blob/main/01_random_features.html) (simulation study 1). Random individual- and dyad-level network structuring features.
 -   [`02_individual_features`](https://htmlpreview.github.io/?https://github.com/BenKawam/causal_framework_ASN_structure/blob/main/02_individual_features.html) (simulation studies 2 and 2'). Individual-level effects. 2: continuous variable (age). 2': discrete variable (sex).
 -   [`03_dyad_features`](https://htmlpreview.github.io/?https://github.com/BenKawam/causal_framework_ASN_structure/blob/main/03_dyad_features.html) (simulation studies 3 and 3'). Dyad-level effects. 3: continuous variable (relatedness). 3': dicrete variable (sex).
